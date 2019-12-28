@@ -1,0 +1,534 @@
+---
+title: "Group 9: Bootstrapping Regression"
+subtitle: '*Drinking Alcohol Behavior among US Healthty Adults*'
+author: "Daxuan Deng, Ming-Chen Lu, Ningyuan Wang"
+date: "December 5, 2019"
+output: 
+  html_document:
+  toc: true
+  number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(digits = 4) 
+
+# libraries
+library(data.table)
+library(dplyr)
+library(knitr)
+library(tidyverse)
+library(kableExtra)
+library(haven) # read xpt datasets 
+library(ggplot2)
+library(reticulate)
+use_virtualenv(virtualenv = "r-reticulate")
+```
+
+## Introduction
+Drinking alcohol is a common behavior among adults. People always think drinking alcohol is good for mood but bad for health. However, do healthy people like drinking alcohol as well? This question led us to investigate the factors that 
+may affect drinking habits for US healthy adults. 
+
+The analysis aims to evalute the effect of factors, including health condition, sex, age, education level and poverty income ratio (PIR), on the frequency of drinking alcohol in the past year among a nationally representative sample of US adults using bootstrapping regression. 
+
+## Data
+### Source 
+Our samples consist of all adults in the National Health and Nutrition Examination Survey (NHANES) from 2005 - 2006. The National Health and Nutrition Examination Survey (NHANES) is a program of studies designed to assess the health and nutritional status of adults and children in the United States. The sample for the survey is selected to represent U.S. population of all ages. 
+
+For the purpose of the study, we limited the data to the samples aged $\geqslant$ 21 years with self-reported good health.
+
+### Variables
+In this analysis, ALQ120Q (freuquency of drinking alcohol in the past 12 months) from *[Alcohol Use](https://wwwn.cdc.gov/Nchs/Nhanes/2005-2006/ALQ_D.htm)* was selected as our response variable, and the predictors were HSD010 (general health condition) from *[Current Health Status](https://wwwn.cdc.gov/Nchs/Nhanes/2005-2006/HSQ_D.htm#HSQ480)*; RIDAGEYR (age), RIAGENDR (gender), DMDEDUC2 (education), INDFMPIR (poverty income ratio) from *[Demographics Data](https://wwwn.cdc.gov/nchs/nhanes/search/datapage.aspx?Component=Demographics&CycleBeginYear=2005)*. The variable descriptions are as follow. Samples with missing values were dropped.
+
+```{r, echo= FALSE}
+v = c("ALQ120Q", "HSD010", "RIDAGEYR", "RIAGENDR", "DMDEDUC2", "INDFMPIR")
+d = c("How often drink alcohol over past 12 months",
+      "General health condition", 
+      "Age at Screening Adjudicated - Recode", 
+      "Gender of the sample person: 1-Male, 2-Female",
+      "Person Highest Education Level",
+      "Family Poverty Income Ratio")
+data.table::data.table(Variable = v, Description  = d) %>%
+  knitr::kable(align = "l") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), position = "left")
+```
+
+The primary goal was understanding the effect of health conditions on drinking alcohol. In addition, we also explored the effects of demographic factors such as age, gender, education and PIR on the frequency of drinking alcohol.
+
+## Method
+Empirical bootstrap is a resampling method for assessing uncertainty of estimator. It is typically used when the exact or asymptotic analytic solutions are unavailable or unsatisfactory. 
+
+Generally, we draw samples with replacement from data set, and calculate the statistic we are interested in. Then, we repeat it $B$ times to generate the empirical distribution of estimator. With this distribution we could derive the variance of estimator.
+
+For example, suppose the regression model is:
+$$y \sim X\beta$$
+where $y\in R^n$ is the response, $X$ is the $n \times (p+1)$ design matrix, and $\beta \in R^{p+1}$ is the coefficient. In normal setting, we assume that error are Gaussian. Under this assumption, we calculate sample variance of coefficient estimator $Var(\hat{\beta})$ using residual sum of squares (RSS):
+$${\hat{\sigma}}^{2} = \frac{RSS}{n-p-1}$$
+$$\widehat{Var} (\hat{\beta}) = {\hat{\sigma}}^2(X'X)^{-1}$$
+However, this could lead a bad result if data is skewed, because the outliers will force the ${\hat{\sigma}}$ become much bigger. To address this problem, we may use the residual bootstrap.
+
+After running regression, we obtain coefficient estimate $\hat{\beta}$ and residuals:
+$$r = y  - \hat{y} = y - X\hat{\beta}$$
+
+which is also a vector in $R^n$. Then we sample $r_i^*$ from $\{r_1, r_2,...r_n\}$ with replacement for $i \in \{1,2,...,n\}$, and define
+$$r^* = (r_1^*, r_2^*,...,r_n^*)'$$
+$$y^* = X\hat{\beta} + r^*$$
+
+In other word, we fix design matrix $X$, but generate a new response vector $y^*$ using the fitted value and the 'error' from resampling the residuals. Now we fit a new model:
+$$y^* \sim X\beta$$
+and we get a new coefficient estimate $\beta^*$. Repeating this process for $B$ times, we get $B$ bootstrap samples of $\hat{\beta}$:
+$$\beta^{*(1)},\beta^{*(1)},...\beta^{*(B)}$$
+Finally, we could calculate the sample variance of $\hat{\beta}$:
+$$\bar{\beta}^* = \frac{1}{B}\sum_{i=1}^B \beta^{*(i)}$$
+$$\widehat{Var}_B(\hat{\beta}) = \frac{1}{B}\sum_{i=1}^B (\beta^{*(i)}-\bar{\beta}^*)^2$$
+Basically, that's the core analysis method we use in this project. To do parallel computation, we use different softwares: MATLAB 2018b, Python 3.6.9 and R version 3.6.1 to calculate respectively.
+
+
+There are some details in our analysis method. In all the analysis, a two-tailed $P$ value less than 0.05 $(P < 0.05)$ is considered statistically significant. Besides, due to the difference among random number generating algorithms in three softwares, our results may slightly different from each other, even using the same seed.
+
+## Core Analysis {.tabset .tabset_fade}
+### R
+#### a. Data Loading and Cleaning
+Our data was obtained from NHANES in .XPT file extention. We used R package "haven" and compiled data to regular dataframes. Then, we merged three datasets into one based on sequence id and reduced the variables as well as limited samples to participants over 20 years old in good health condition. In addition, missing values were dropped in this part and continuous variables were standardized for the purpose of regression analysis. Finally, there were 2791 samples in our dataset.
+
+```{r, message = FALSE, warning = FALSE, echo= FALSE}
+# read in the datasets and select the variables 
+alcohol = read_xpt("ALQ_D.XPT") %>% 
+  select(seqn = SEQN, alq120q = ALQ120Q) %>%
+  filter(alq120q < 366) %>%
+  drop_na()
+
+health = read_xpt("HSQ_D.XPT") %>%
+  select(seqn = SEQN, hsd010 = HSD010) %>%
+  filter(hsd010 <=3 ) %>%
+  drop_na() # limit to the healthy samples
+
+demography = read_xpt("DEMO_D.XPT") %>%
+  filter(RIDAGEYR >=21, DMDEDUC2 <= 5 ) %>%
+  transmute(seqn = SEQN, age = RIDAGEYR, gender = RIAGENDR, 
+            education = DMDEDUC2, pir = INDFMPIR ) %>%
+  drop_na() # limit to people > 20 years
+```
+
+```{r}
+# join above datasets
+df = left_join(alcohol, health, by = "seqn") %>% 
+  left_join(., demography, by = "seqn") %>%
+  drop_na() %>%
+  rename(drinks = alq120q, health = hsd010) # 2791*7
+# convert variables to factors and rescale continous variables
+df = df %>% 
+  mutate_at(vars(seqn, health, gender, education), as.factor) %>%
+  transmute(health, gender, education, drinks_std = scale(drinks),
+         age_std = scale(age),
+         pir_std = scale(pir)) 
+```
+
+#### b. OLS Model and Diagnosis
+First, we fitted an OLS regression model with drinks as response and health condition, age, gender, education and PIR as predictors. The reference level of the model was the "good" health condition (the other two levels of health were "very good" and "excellent"). A summary of the model fit shown as follow. 
+
+```{r}
+# fit the model
+lm1 = lm(drinks_std ~ relevel(health, ref = 3)  + age_std + gender + 
+           education + pir_std, data = df) 
+summary(lm1) 
+```
+
+However, with the model diagnostics, we noticed that the residuals failed the OLS normality assumption. 
+
+```{r}
+# model diagnostics 
+res = lm1$residuals 
+fit = lm1$fitted
+par(mfrow=c(1,2))
+plot(fit, res, xlab = "fitted", ylab = "Residuals") # unequal variance in residuals
+qqnorm(res, ylab = "Residuals"); qqline(res) # non-normal residual
+```
+
+#### c. Bootstrapping Regression
+Since the data failed the model assumption and possible soutions such as lognormal or Box Cox transformation of the response were not appropriate. We considered using bootstrapping regression as an alternative. The theory of bootstrapping regression residuals were claimed in the method section.
+
+We sampled residuals 1000 times and then created a faked vector called "boot_y" as new response variable, and then refitted the model with fixed predictors as above and got distributions of beta estimates. With new beta estimates and corresponding standard errors, we did t test for each predictor and computed p values for terms in the model. Unfortunately, we did not see obvious improvement based on p values to justify statistical significance between response and predicotrs variables. However, we concluded that we had robust standard errors and relative p-values. 
+
+```{r}
+set.seed(506)
+# construct bootstrap samples : res and new response y* 
+n = nrow(df) # sample size
+B = 1e3  # number of bootstrap samples 
+boot_samples = sample(res, n * B, replace = TRUE)
+dim(boot_samples) = c(n, B) # each column is a dataset
+boot_y = matrix(fit, n, ncol(boot_samples)) + boot_samples # bootstrap y as faked response
+
+# refit the model with bootstrap samples on y* and get the estimate of coefficents
+lm_coef = function(y) lm(y ~ relevel(df$health, ref = 3)  + df$age_std + df$gender + df$education + df$pir_std)$coef
+boot_lms = apply(boot_y, 2, lm_coef)
+
+# apply(boot_lms, 1, hist) # check the distributions of beta hat
+# hist(boot_lms[2,], main = "point estimate of health in excellent",
+#      xlab = expression(hat(b)["excellent health"]))
+# hist(boot_lms[3,], main = "point estimate of health in very good",
+#      xlab = expression(hat(b)["very good health"]))
+# compute standard error for each term 
+
+se = sqrt(rowSums((boot_lms - rowMeans(boot_lms))^2) / B)
+t =  lm1$coefficients / se
+p = pt(abs(t), df = 1, lower.tail = F)
+tb = cbind(lm1$coef, se, t, p) 
+rownames(tb) =  c("Intercept", "Health: excellent", "Health: very good", "Age", "Gender", "Education: 2", "Education: 3", "Education: 4", "Education: 5", "PIR")
+tb %>% 
+  knitr::kable(align = "c", 
+               col.names = c("Estimate", "SE", "T", "P-value"), 
+               digits =  4) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+### Python
+#### a. Import Libraries and Datasets
+
+```{python 1, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# Set up: ----------------------------------------------------------------------
+import xport
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import math
+import random
+import matplotlib.pyplot as plt
+from scipy.stats import t
+from statsmodels.formula.api import ols
+
+# Read in the data: ------------------------------------------------------------
+## 'rb' mode - opens the file in binary format for reading
+with open('HSQ_D.XPT', 'rb') as f:
+    df_health = xport.to_dataframe(f)
+
+with open('ALQ_D.XPT', 'rb') as f:
+    df_alcohol = xport.to_dataframe(f)
+
+with open('DEMO_D.XPT', 'rb') as f:
+    df_demo = xport.to_dataframe(f)
+```
+
+#### b. Data Preparation
+We first extracted key variables and filtered the targeted rows from three separate datasets. Then, we merged columns into one data frame and removed the  missing values. Finally, we factorized the variables of "sex", "education", and "health", as well as normalized the variables of "alcohol", "age", and "pir".
+
+```{python 2, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# Data preparation: ------------------------------------------------------------
+# Extract key columns
+df_health = df_health.loc[df_health['HSD010'] <= 3, ['SEQN','HSD010']]
+df_alcohol = df_alcohol.loc[df_alcohol['ALQ120Q'] <= 365, ['SEQN','ALQ120Q']]
+df_demo = df_demo.loc[(df_demo.RIDAGEYR >= 21) & (df_demo.DMDEDUC2 <= 5), 
+                      ['SEQN', 'RIAGENDR', 'RIDAGEYR', 'INDFMPIR', 'DMDEDUC2']]
+
+# Merge key columns into one data frame
+df = pd.merge(df_alcohol, df_health, on = 'SEQN')
+df = pd.merge(df, df_demo, on = 'SEQN')
+
+# Drop missing values
+#df.isnull().sum()
+df = df.dropna(axis = 0)
+
+# Rename columns
+df = df.rename(columns = {"SEQN": "id", "ALQ120Q": "alcohol", "HSD010": "health",
+                          "RIAGENDR": "sex", "RIDAGEYR": "age", "INDFMPIR": "pir",
+                          "DMDEDUC2": "edu"})
+                          
+# Normalize alcohol, age, and poverty income ratio(pir)
+df.alcohol = (df.alcohol - np.mean(df.alcohol)) / np.std(df.alcohol)
+df.age = (df.age - np.mean(df.age)) / np.std(df.age)
+df.pir = (df.pir - np.mean(df.pir)) / np.std(df.pir)
+# Factorize health and education
+df.sex = df.sex.astype('category')
+df.edu = df.edu.astype('category')
+df.health = pd.factorize(df.health)[0]
+```
+
+#### c. OLS Model and Diagnosis
+The initial OLS model regressed alcohol on health, sex, age, poverty income ratio(pir), and education. The reference level of the model was the "good" health condition. The summary of the fitted model is shown below.
+
+```{python 3, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# Initial linear regression model: ---------------------------------------------
+lmod = ols('alcohol ~ C(health) + C(sex) + age + pir + C(edu)', data = df).fit()
+lmod.summary()
+```
+
+
+```{python 4, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# plot residual errors
+fitted = lmod.fittedvalues
+res = lmod.resid
+plt.style.use('ggplot')
+plt.scatter(fitted, res, color = "green", s = 10)
+plt.hlines(y = 0, xmin = -0.16, xmax = 0.15, linewidth = 1, color = "red")
+plt.title("Residuals vs Fitted")
+plt.show()
+```
+
+The residual versus fitted plot presents the non-normality issue. In order to make the standard errors more robust, we resampled the residuals to the estimate and adding them back to the fitted values.
+
+#### d. Bootstrapping Residuals
+The function is constructed to sample residuals from the initial OLS model with replacement. Then, by adding them back to the original fitted values, we created the new responses. Using those new responses, we fitted OLS model again with predictors being fixed, but changing the responses and returned the coefficeints of the new OLS model. Noted that we also returned the standard errors derived from the sampling residuals for the purpose of additional analysis in the next section.
+
+```{python 5, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# Function to resample residuals with replacement and fit new model: -----------
+def boot_res(df, fitted, res):
+    # input: 
+    #   df - the original data for fitting initial model
+    #   fitted - a array of fitted values from the initial model
+    #   res  - a array of residuals from the initial model
+    # output: 
+    #   n_lmod.params - the coefficients of new model
+    #   n_ss - sigma square for the additional analysis
+    
+    # sampling residauls with replacement
+    b_res = np.random.choice(res, size = len(res), replace = True)
+    n_ss = sum(b_res**2) / (df.shape[0] - df.shape[1] - 1)
+    
+    # adding the resampled residuals back to the fitted values
+    new_y = fitted + b_res
+    
+    # combine old predictors values with new responses
+    X = df.iloc[:,2:]
+    n_df = pd.concat([new_y, X], axis = 1)
+    n_df.rename({0:'alcohol'}, axis = 1, inplace = True) 
+    
+    # fit new model
+    n_lmod = ols('alcohol ~ C(health) + C(sex) + age + pir + C(edu)', 
+    data = n_df).fit()
+    return(n_lmod.params, n_ss)
+    
+# Test the function
+#boot_res(df, fitted, res)
+```
+
+```{python 6, engine.path = '/Users/Amy/anaconda3/bin/python'}
+# Bootstrapping residuals 1000 times: ------------------------------------------
+random.seed(506)
+B = 1000
+b = [boot_res(df, fitted, res) for i in range(B)]
+b_coef = [lis[0] for lis in b]
+
+# convert list to dataframe
+b_df = pd.DataFrame(np.row_stack(np.array(b_coef)), 
+                    columns = ['Intercept', 'health.1', 'health.2', 'sex.2',
+                    'edu.2', 'edu.3', 'edu.4', 'edu.5', 'age', 'pir'])
+
+# Compute SE for 1000 times bootstrap
+b_se = b_df.std(axis = 0)
+#print("Standard Error for each coefficient:", b_se)
+
+# Plot the distribution of bootstrapping coefficients for "health" variable
+#bh1 = sns.distplot(b_df.iloc[:,1])
+#bh1.set_title('Coefficients Distribution of Health "very good"')
+
+# Compute t-statistic
+tval = np.array(lmod.params)[:] / np.array(b_se)
+
+# Compute p-value
+pval = t.sf(np.abs(tval), 1)
+
+# Combine result into a dataframe
+col = ["Estimate", "SE", "tStats", "pValue"]
+rows = lmod.params.index.values
+data = np.array([lmod.params, b_se, tval, pval])
+data = np.transpose(data)
+tbl = pd.DataFrame(data=data, columns=col, index=rows)
+tbl.round(4)
+```
+
+The t-statistic is computed using original fitted values and new standard errors after bootstrapping residuals. However, we don't see much improvement of the standard errors and p-values.
+
+### Matlab
+#### a. Data Preparation
+
+First, we load data, and select the variables mentioned in the begining. Then we merge three data sets into one with key variable "SEQN". After renaming variables, we do some data cleaning by filtering out invaild values such as missing values. The last step in this part is centralizing numeric variables and factorizing categorical variables. In particular, we set "3"(which represent "Good") in health condition variable as base.
+
+```{matlab, eval = FALSE, include = TRUE}
+% Title:  Matlab script for group project, STATS 506
+% Author: Daxuan Deng
+% Funtion: explore the relationship between health condition and drinking
+%          alcohol, using data NHANES 2005-2006 data.
+% Date: 11/30/2019
+
+% load data
+alq = xptread('ALQ_D.XPT');
+demo = xptread('DEMO_D.XPT');
+hsq = xptread('HSQ_D.XPT');
+
+% select variables
+alq = alq(:, {'SEQN', 'ALQ120Q'});
+demo = demo(:, {'SEQN', 'RIAGENDR', 'RIDAGEYR', 'DMDEDUC2', 'INDFMPIR'});
+hsq = hsq(:, {'SEQN', 'HSD010'});
+
+% merge data
+dt = join(alq, demo, 'Keys', 'SEQN');
+dt = join(dt, hsq, 'Keys', 'SEQN');
+
+% rename columns
+dt.Properties.VariableNames = ...
+["id", "alcohol", "sex", "yr", "edu", "pir", "health"];
+
+% drop invalid values
+dt = rmmissing(dt);
+dt(dt.alcohol > 365, :) = [];
+dt(dt.yr < 21, :) = [];
+dt(dt.edu > 5, :) = [];
+dt(dt.health > 3, :) = [];
+
+% centralize and factorize
+dt.alcohol = (dt.alcohol - mean(dt.alcohol)) ./ std(dt.alcohol);
+dt.sex = categorical(dt.sex);
+dt.yr = (dt.yr - mean(dt.yr)) ./ std(dt.yr);
+dt.edu = categorical(dt.edu);
+dt.pir = (dt.pir - mean(dt.pir)) ./ std(dt.pir);
+dt.health = categorical(dt.health);
+% set 'Good' as base level
+dt.health = reordercats(dt.health, {'3','1','2'});
+```
+
+#### b. OLS and Diagnosis
+Now we run regression. But the summary of coefficient estimates shows that we may not fit the model well. Furthermore, we plot the residuals, which reveals that our data is skewed. In this case, a residual bootstrap seems to be an appropriate choice.
+
+```{matlab, eval = FALSE, include = TRUE}
+% run OLS
+md = fitlm(dt, 'alcohol ~ sex + yr + edu + pir + health');
+
+% summary
+md.Coefficients
+```
+
+```{r, echo=FALSE, result = 'asis'}
+ols = read.csv("ols.csv",row.names = 1)
+knitr::kable(ols,digits = 4) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+```{matlab, eval = FALSE, include = TRUE}
+% extract fitted values and residuals 
+fit = predict(md, dt(:, 3:7));
+res = md.Residuals.Raw;
+coef = md.Coefficients(:,1);
+
+% plot residuals
+plot(1:height(dt), res, 'x'), title('residuals of OLS')
+```
+
+<center>
+![](/Users/Amy/Desktop/Stats506_F19/GroupProject/matlab_plot.jpg)
+</center>
+
+#### c. residual bootstrap
+In this part, first we resample residuals with replacement, and generate a new 'error' vector. Combining it with fitted value, we obtain a new response. Again, run regression and we get a new estimate of coefficient. With 1000 times bootstrapping, we get the empirical distribution, and from this we calculate the variance of estimates. Replacing the original SE with this new estimates, we could run t test on each covariate respectively.
+
+```{matlab, eval = FALSE, include = TRUE}
+% bootstrap
+rng(506);
+nboot = 1000;
+
+% resample residuals
+func = @(x)x;
+res_boot = bootstrp(nboot, func, res);
+
+dt_boot = dt(:, 3:7);
+beta_boot = zeros(nboot, 10);
+
+for i=1:nboot
+    % generate new response
+    dt_boot.alcohol = fit + res_boot(i,:)';
+    
+    % fit new model
+    md_boot = fitlm(dt_boot, 'alcohol ~ sex + yr + edu + pir + health');
+    
+    % extract new estimate
+    beta_boot(i,:) = table2array(md_boot.Coefficients(:,1))';
+end
+
+% calculate std err
+se = std(beta_boot);
+
+% summary
+result = coef;
+result.se = se';
+result.t = result.Estimate ./ result.se;
+result.pvalue = 1-tcdf(abs(result.t),1);
+
+result
+```
+
+```{r, echo=FALSE, result = 'asis'}
+ols = read.csv("boot.csv", row.names = 1)
+knitr::kable(ols, align = "c", 
+             col.names = c("Estimate", "SE", "T", "P-value"), digits =  4) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+## Additional Analysis
+In this section, we describe a method developed by ourselves to construct new SE. We tried this method before learning the bootstrapping regression method addressed in the core analysis. We put our own creativity here and decided to put it as our additional analysis. :) The original thought behind this method was that we wanted to improve the standard errors without changing the point estimates.
+
+The main differences between the core analysis and here is that we only improved the standard errors by resampling residuals. In other words, we used the coefficient estimates derived from the initial regression model instead of the new coefficient estimates updated by the resampled residuals. Compared to the core analysis, here we computed the ${\hat{\sigma}}^{2^*} = \frac{\sum{r^*}}{n-p-1}$. Then, choosing the ${\hat{\sigma}}^{2^*}$ from our 1000 times bootrapping. 
+
+```{python, echo = FALSE}
+#!/usr/bin/env python
+from patsy import dmatrix
+
+# Extract sigma^2 from 1000 times bootstrapping
+n_ss = [lis[1] for lis in b]
+
+# distribution plot for sigma^2
+sns.set()
+sns.distplot(n_ss)
+plt.axvline(min(n_ss), linestyle='dashed', linewidth=1.2, 
+color='g', label = 'minimum')
+plt.axvline(np.median(n_ss), linestyle='dashed', linewidth=1.2, 
+color='k', label = 'median')
+plt.axvline(0.9992, linestyle='dashed', linewidth=1.2, 
+color='m', label = 'original')
+plt.axvline(np.mean(n_ss), linestyle='dashed', linewidth=1.2, 
+color='r', label = 'mean')
+
+plt.legend()
+plt.title('Distribution Plot of Estimated Sigma^hat^2')
+plt.show()
+```
+
+From the above distribution plot of ${\hat{\sigma}}^{2^*}$, it turns out that the mean of bootstrapping ${\hat{\sigma}}^{2^*}$ is similar to our original ${\hat{\sigma}}^{2}$. Hence, we would conclude that either method of computing standard errors leads to similar results.
+
+## Results
+
+<center>
+![](/Users/Amy/Desktop/Stats506_F19/GroupProject/table.jpg)
+</center>
+
+The project includes 2791 participants (51.92% males and 48.08% females) with a mean age of 47.19 years. In terms of health condition, 12.47% participants are in self-reported excellent health, 38.34 % are in very good helath and 49.19% are in good health. Descriptive characteristics of the participants were shwon in table below. 
+
+```{r, echo = FALSE, result = 'asis', fig.align='c'}
+tb %>% 
+  knitr::kable(align = "c", 
+               col.names = c("Estimate", "SE", "T", "P-value"), 
+               digits =  4) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+From above descriptive summary table, we learned that good health condition is positively correlated to the frequency of drinking alcohol. More specifically,
+setting people in good condition as reference level, people in excellent health are more likely to drink alcohol than people in very good health condition. Intuitively, healty people may drink less because alcohol is bad for health. However, the finding surprised us that the model suggests an opposite conclusion.
+
+
+In terms of factors of age and gender, elders and females tend to drink less alcohol, which is consistent to our common sense. When it comes to education level, the model indicates that higher education leads to more alcohol consumption. In particular, people with the education level of college or AA degree have the highest tendency to drink more alcohol, while people with graduate level or above have the lowest tendency to drink more. Why these two specific groups of people have the biggest difference in tendency? Based on our graduate life experiences, pressure may be an important factor contributing to above GAP in alcohol consumption. Last but not least, rich people (i.e. with higher PIR) consume more alcohol according to the model.
+
+
+Note that multi-collinearity could lead to big influence on the variation of correlation between covariates and response, we need to check the variance inflation factor (VIF). In fact, their VIFs are quite low, so we are free from the violation of multi-collinearity.
+
+
+In general, none of the covariate is statistically significant, we may need to be more careful about the conclusions derived from the model.
+
+## Discussion
+Both residual bootstrap and our original method in additional analysis fail to fit the data well, due to the skewness of data. To address this problem, we may use function regression. In other word, we do not regress response on covariates themselves, but on a function of covariates, i.e.
+$$y\sim X \beta \rightarrow y\sim f(X) \beta$$
+There could be many choices for basis function $f(\cdot)$, such as polynomial, b-spline, or sinuoid. Intuitively, the new model may fit the data better, resulting in a significant esimate of covariates.
+
+## References
+http://faculty.washington.edu/yenchic/17Sp_403/Lec6-bootstrap_reg.pdf
+
+
+http://users.stat.umn.edu/~helwig/notes/boot-Notes.pdf
