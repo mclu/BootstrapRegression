@@ -1,5 +1,5 @@
-# Bootstrapping Regression Model
-#### How do drinking habits for US adults compare by health status, among the healthy?
+# How do drinking habits for US adults compare by health status, among the healthy?
+#### Bootstrapping Regression Model
 
 ## Overview
 The project investigated the factors that may affect drinking habits for healthy U.S. adults using the National Health and Nutrition Examination Survey (NHANES) from 2005 - 2006 and it was carried out by Ming-Chen Lu, Daxuan Deng, and Ningyuan Wang.
